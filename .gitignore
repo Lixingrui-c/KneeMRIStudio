@@ -1,0 +1,28 @@
+# Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# MRI 数据和分割结果
+*.nii
+*.nii.gz
+*.dcm
+seg_result/
+
+# 模型权重
+*.pth
+*.pt
+*.ckpt
+
+# 本地配置和密钥
+.env
+.env.*
+!.env.example
+
+# nnUnet 训练日志和输出
+nnUnet_raw/
