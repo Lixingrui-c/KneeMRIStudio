@@ -26,3 +26,8 @@ seg_result/
 
 # nnUnet 训练日志和输出
 nnUnet_raw/
+temp/
+cache/
+KL0_R/
+network_weights/
+templates/

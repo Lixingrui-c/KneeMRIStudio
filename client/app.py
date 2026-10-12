@@ -1,643 +1,643 @@
-import sys
+import json
 import os
-import time
-
+import sys
+from pathlib import Path
 from PyQt5 import QtWidgets
-from PyQt5.QtWidgets import QProgressDialog
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtCore import Qt, QSize, QTimer, QElapsedTimer
-
+from PyQt5.QtCore import Qt, QTimer, QElapsedTimer, QSize
 import vtkmodules.all as vtk
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-import get_seg 
-import vtk_loader
-import SegWorker
-
+if __package__:
+    from . import vtk_loader
+    from .AnalysisWorker import AnalysisWorker
+    from .modify_dialog import seg_modify_dialog
+else:
+    import vtk_loader
+    from AnalysisWorker import AnalysisWorker
+    from modify_dialog import seg_modify_dialog
 
 
 class NiftiSurfaceViewer(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-
-        # ---------- UI 布局 ----------
-        self.frame = QtWidgets.QFrame()
-        main_layout = QtWidgets.QHBoxLayout(self.frame)
-        
-        # --------- 控制区域 -------
-        self.create_menu() #创建菜单
-        self.left_widget = QtWidgets.QWidget()
-        self.left_layout = QtWidgets.QVBoxLayout(self.left_widget)
-        self.create_groupbox() #创建盒子,包含选择区域功能和生成建模功能
-
-        # ---------- 显示区域 ----------
-        self.right_widget = QtWidgets.QWidget()
-        right_layout = QtWidgets.QGridLayout(self.right_widget)
-
-        # --------- vtk ----------
-
-        ## -------- 3D分区 --------
-        self.vtk_widget = QVTKRenderWindowInteractor(self.right_widget)
-        self.ren_3d = vtk.vtkRenderer()
-        self.ren_3d.SetBackground(0.1, 0.1, 0.1)
-        self.vtk_widget.GetRenderWindow().AddRenderer(self.ren_3d)
-        self.iren = self.vtk_widget.GetRenderWindow().GetInteractor()
-        self.iren.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
-
-        ## -------- z切片 --------
-        self.widget_slice_z = QVTKRenderWindowInteractor(self.right_widget)
-        self.ren_slice_z = vtk.vtkRenderer()
-        self.ren_slice_z.SetBackground(0.1, 0.1, 0.1)
-        self.widget_slice_z.GetRenderWindow().AddRenderer(self.ren_slice_z)
-        self.iren_z = self.widget_slice_z.GetRenderWindow().GetInteractor()
-        self.iren_z.SetInteractorStyle(vtk.vtkInteractorStyleImage())
-     
-        ## -------- x切片 --------
-        self.widget_slice_x = QVTKRenderWindowInteractor(self.right_widget)
-        self.ren_slice_x = vtk.vtkRenderer()
-        self.ren_slice_x.SetBackground(0.1, 0.1, 0.1)
-        self.render_window_x = self.widget_slice_x.GetRenderWindow()
-        self.widget_slice_x.GetRenderWindow().AddRenderer(self.ren_slice_x)
-        self.iren_x = self.widget_slice_x.GetRenderWindow().GetInteractor()
-        self.iren_x.SetInteractorStyle(vtk.vtkInteractorStyleImage())
-
-        ## -------- y切片 --------
-        self.widget_slice_y = QVTKRenderWindowInteractor(self.right_widget)
-        self.ren_slice_y = vtk.vtkRenderer()
-        self.ren_slice_y.SetBackground(0.1, 0.1, 0.1)
-        self.render_window_y = self.widget_slice_y.GetRenderWindow()
-        self.widget_slice_y.GetRenderWindow().AddRenderer(self.ren_slice_y)
-        self.iren_y = self.widget_slice_y.GetRenderWindow().GetInteractor()
-        self.iren_y.SetInteractorStyle(vtk.vtkInteractorStyleImage())
-
-        #把vtk窗口加到right_layout里面去
-        right_layout.addWidget(self.vtk_widget, 0, 0)
-        right_layout.addWidget(self.widget_slice_z, 0, 1)
-        right_layout.addWidget(self.widget_slice_x, 1, 0)
-        right_layout.addWidget(self.widget_slice_y, 1, 1)
-
-
-        # ----------添加占位提示文字-----------------
-        self.placeholder_actors_3d = []    # 存放3D视图的占位文字
-        self.placeholder_actors_slices = [] # 存放三个切片视图的占位文字
-        self.add_placeholder_text(self.ren_3d, "请点击分割按钮\n生成3D模型", view_type="3D")
-        self.add_placeholder_text(self.ren_slice_x, "矢状面\n请打开 .nii.gz 文件", view_type="slices")
-        self.add_placeholder_text(self.ren_slice_y, "冠状面\n请打开 .nii.gz 文件", view_type="slices")
-        self.add_placeholder_text(self.ren_slice_z, "横断面\n请打开 .nii.gz 文件", view_type="slices")
-
-        # ---------- 整体布局 ---------------
-        main_layout.addWidget(self.left_widget, stretch=30)  
-        main_layout.addWidget(self.right_widget, stretch=167)
-            
-        self.current_volume = None
-        self.current_seg_volume = None
+        self.server_url = os.environ.get("KNEE_SERVER_URL", "http://127.0.0.1:8000")
         self.current_nii_path = None
+        self.current_volume = self.current_seg_volume = None
+        self.case_id = self.task_id = self.operation = None
+        self.worker = None
+        self.pending = False
+        self.closing = False
+        self.selected_labels = [True] * 5
+        self.opacity_labels = [70] * 5
+        self.subject_actors = {}
+        self.coverage_actors = {}
+        self.slice_actors = {}
+        self.slice_stacks = {}
+        self.template_overlays = {}
+        self.patient_overlays = {}
+        self.template_3d_actors = {}
+        self.registration_done = False
+        self.metrics = None
+        self.coverage_manifest = None
+        self.registration_qc = None
+        self.seg_modify_dialog = seg_modify_dialog(self)
+        self.seg_modify_dialog.setting_applied.connect(self.apply_modify_settings)
+        self.create_menu()
 
-        self.setCentralWidget(self.frame)
-        self.statusBar().showMessage("就绪 - 请打开 .nii.gz 文件并输入等值面阈值")
-        #self.showFullScreen()
+        frame = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(frame)
+        controls = QtWidgets.QHBoxLayout()
+        self.side = QtWidgets.QComboBox()
+        self.side.addItem("请选择左右膝", None)
+        self.side.addItem("右膝", "right")
+        self.side.addItem("左膝（当前未配置配准模板）", "left")
+        controls.addWidget(self.side)
+        self.coverage_check = QtWidgets.QCheckBox("显示覆盖 / 缺损标注")
+        self.coverage_check.setChecked(True)
+        self.cartilage_check = QtWidgets.QCheckBox("分析时叠加软骨")
+        self.cartilage_check.setChecked(False)
+        for check in (self.coverage_check, self.cartilage_check):
+            controls.addWidget(check)
+            check.toggled.connect(self.render_surface)
+        self.legend = QtWidgets.QLabel(
+            '<span style="color:#2dbe50">■ 软骨覆盖</span>　'
+            '<span style="color:#e63232">■ 估计全层缺损</span>　'
+            '<span style="color:#888">■ 未纳入分析范围</span>')
+        controls.addWidget(self.legend)
+        layout.addLayout(controls)
+        overlay_controls = QtWidgets.QHBoxLayout()
+        self.template_check = QtWidgets.QCheckBox("MRI 叠加模板软骨参考")
+        self.template_check.setChecked(True)
+        self.template_check.toggled.connect(self.update_template_overlay)
+        overlay_controls.addWidget(self.template_check)
+        overlay_controls.addWidget(QtWidgets.QLabel("不透明度"))
+        self.template_opacity = QtWidgets.QSlider(Qt.Horizontal)
+        self.template_opacity.setRange(0, 100)
+        self.template_opacity.setValue(40)
+        self.template_opacity.setMaximumWidth(180)
+        self.template_opacity.valueChanged.connect(self.update_template_overlay)
+        overlay_controls.addWidget(self.template_opacity)
+        self.template_opacity_text = QtWidgets.QLabel("40%")
+        overlay_controls.addWidget(self.template_opacity_text)
+        overlay_controls.addWidget(QtWidgets.QLabel('<span style="color:#cc40ff">■ 模板软骨参考</span>（非厚度差值）'))
+        overlay_controls.addStretch()
+        layout.addLayout(overlay_controls)
+        patient_controls = QtWidgets.QHBoxLayout()
+        self.patient_check = QtWidgets.QCheckBox("MRI 叠加患者软骨分割")
+        self.patient_check.setChecked(True)
+        patient_controls.addWidget(self.patient_check)
+        patient_controls.addWidget(QtWidgets.QLabel("不透明度"))
+        self.patient_opacity = QtWidgets.QSlider(Qt.Horizontal)
+        self.patient_opacity.setRange(0, 100)
+        self.patient_opacity.setValue(40)
+        self.patient_opacity.setMaximumWidth(180)
+        patient_controls.addWidget(self.patient_opacity)
+        self.patient_opacity_text = QtWidgets.QLabel("40%")
+        patient_controls.addWidget(self.patient_opacity_text)
+        patient_controls.addWidget(QtWidgets.QLabel('<span style="color:#26e659">■ 患者软骨分割</span>（与紫色模板可分别开关）'))
+        patient_controls.addStretch()
+        self.patient_check.toggled.connect(self.update_patient_overlay)
+        self.patient_opacity.valueChanged.connect(self.update_patient_overlay)
+        layout.addLayout(patient_controls)
+        template_3d_controls = QtWidgets.QHBoxLayout()
+        self.template_3d_check = QtWidgets.QCheckBox("3D 显示模板软骨参考")
+        self.template_3d_check.setChecked(True)
+        template_3d_controls.addWidget(self.template_3d_check)
+        template_3d_controls.addWidget(QtWidgets.QLabel("不透明度"))
+        self.template_3d_opacity = QtWidgets.QSlider(Qt.Horizontal)
+        self.template_3d_opacity.setRange(0, 100)
+        self.template_3d_opacity.setValue(35)
+        self.template_3d_opacity.setMaximumWidth(180)
+        template_3d_controls.addWidget(self.template_3d_opacity)
+        self.template_3d_opacity_text = QtWidgets.QLabel("35%")
+        template_3d_controls.addWidget(self.template_3d_opacity_text)
+        template_3d_controls.addWidget(QtWidgets.QLabel("紫色：配准后的模板软骨"))
+        template_3d_controls.addStretch()
+        self.template_3d_check.toggled.connect(self.render_surface)
+        self.template_3d_opacity.valueChanged.connect(self.render_surface)
+        layout.addLayout(template_3d_controls)
+        grid = QtWidgets.QGridLayout()
+        layout.addLayout(grid, 1)
+        self.widgets = {}
+        self.renderers = {}
+        self.slice_sliders = {}
+        self.slice_labels = {}
+        for key, title, row, col in (
+            ("3d", "三维模型 / 软骨覆盖与估计缺损", 0, 0),
+            ("z", "Z 方向切片", 0, 1),
+            ("x", "X 方向切片", 1, 0),
+            ("y", "Y 方向切片", 1, 1),
+        ):
+            panel = QtWidgets.QGroupBox(title)
+            box = QtWidgets.QVBoxLayout(panel)
+            widget = QVTKRenderWindowInteractor(panel)
+            box.addWidget(widget, 1)
+            if key != "3d":
+                slice_row = QtWidgets.QHBoxLayout()
+                slider = QtWidgets.QSlider(Qt.Horizontal)
+                slider.setRange(0, 0)
+                slider.setEnabled(False)
+                slider.setSingleStep(1)
+                slider.setToolTip("拖动浏览切片；方向键逐层移动")
+                label = QtWidgets.QLabel("未加载")
+                slice_row.addWidget(slider, 1)
+                slice_row.addWidget(label)
+                box.addLayout(slice_row)
+                self.slice_sliders[key] = slider
+                self.slice_labels[key] = label
+                slider.valueChanged.connect(lambda value, axis=key: self.change_slice(axis, value))
+            renderer = vtk.vtkRenderer()
+            renderer.SetBackground(.1, .1, .1)
+            widget.GetRenderWindow().AddRenderer(renderer)
+            if key == "3d":
+                widget.GetRenderWindow().SetAlphaBitPlanes(1)
+                widget.GetRenderWindow().SetMultiSamples(0)
+                renderer.SetUseDepthPeeling(True)
+                renderer.SetMaximumNumberOfPeels(100)
+                renderer.SetOcclusionRatio(.1)
+            style = vtk.vtkInteractorStyleTrackballCamera() if key == "3d" else vtk.vtkInteractorStyleImage()
+            widget.GetRenderWindow().GetInteractor().SetInteractorStyle(style)
+            self.widgets[key], self.renderers[key] = widget, renderer
+            grid.addWidget(panel, row, col)
+        self.vtk_widget = self.widgets["3d"]
+        self.ren_3d = self.renderers["3d"]
+        self.setCentralWidget(frame)
+        self.progress = None
+        self.elapsed = QElapsedTimer()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_progress)
+        self.status_text = "就绪，请打开 MRI"
+        self.initialized = False
+        self.update_actions()
 
     def create_menu(self):
-        """创建菜单栏和顶部功能栏。"""
-        style = self.style()
+        toolbar = QtWidgets.QToolBar("常用功能", self)
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(24, 24))
+        self.addToolBar(toolbar)
+        self.actions = {}
+        entries = [
+            ("open", "打开文件", self.open_raw_nii_gz),
+            ("seg", "分割 / 显示设置", self.show_modify_dialog),
+            ("reg", "配准", lambda: self.start_operation("registration")),
+            ("morph", "计算指标 / 缺损", lambda: self.start_operation("morphometry")),
+            ("metrics", "指标结果", self.show_metrics),
+            ("resume", "继续等待 / 重取结果", self.resume_task),
+            ("retry", "重新提交任务", self.retry_task),
+            ("qc", "配准质控", self.show_qc),
+            ("template", "载入已有配准标签", self.open_template_overlay),
+            ("reset", "恢复默认", self.default_back),
+        ]
+        menu = self.menuBar().addMenu("功能")
+        for key, text, slot in entries:
+            action = QtWidgets.QAction(text, self)
+            action.triggered.connect(slot)
+            toolbar.addAction(action)
+            menu.addAction(action)
+            self.actions[key] = action
 
-        # ---------- 功能动作 ----------
-        # 菜单栏和工具栏共享 QAction，统一连接和管理功能。
-        self.open_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
-            "打开文件",
-            self
-        )
-        self.open_action.setShortcut("Ctrl+O")
-        self.open_action.setToolTip("打开 MRI 原始文件（.nii.gz）")
-        self.open_action.setStatusTip("打开 MRI 原始文件，显示三个方向的切片")
-        self.open_action.triggered.connect(self.open_raw_nii_gz)
+    def busy(self):
+        return self.worker is not None and self.worker.isRunning()
 
-        self.seg_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_MediaPlay),
-            "分割并显示",
-            self
-        )
-        self.seg_action.setToolTip(
-            "分割当前 MRI 并显示 3D 模型；已有分割结果时更新显示"
-        )
-        self.seg_action.setStatusTip(
-            "调用分割服务；已有分割结果时按当前区域和透明度重新显示"
-        )
-        self.seg_action.triggered.connect(self.execute_surface)
-
-        # 后续实现的分析功能：先显示为禁用状态。
-        self.volume_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView),
-            "计算体积",
-            self
-        )
-        self.area_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogContentsView),
-            "表面积",
-            self
-        )
-        self.thickness_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogInfoView),
-            "软骨厚度",
-            self
-        )
-
-        for action in (
-            self.volume_action,
-            self.area_action,
-            self.thickness_action,
-        ):
-            action.setEnabled(False)
-            action.setToolTip(f"{action.text()}：待实现")
-
-        self.default_action = QtWidgets.QAction(
-            style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
-            "恢复默认",
-            self
-        )
-        self.default_action.setToolTip("恢复默认的区域选择和透明度")
-        self.default_action.triggered.connect(self.default_back)
-
-        self.exit_action = QtWidgets.QAction("退出", self)
-        self.exit_action.triggered.connect(self.close)
-
-        # ---------- 菜单栏 ----------
-        menubar = self.menuBar()
-
-        file_menu = menubar.addMenu("文件")
-        file_menu.addAction(self.open_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.exit_action)
-
-        segmentation_menu = menubar.addMenu("分割")
-        segmentation_menu.addAction(self.seg_action)
-
-        analysis_menu = menubar.addMenu("分析")
-        analysis_menu.addAction(self.volume_action)
-        analysis_menu.addAction(self.area_action)
-        analysis_menu.addAction(self.thickness_action)
-
-        view_menu = menubar.addMenu("视图")
-        view_menu.addAction(self.default_action)
-
-        # ---------- 顶部功能栏 ----------
-        self.top_toolbar = QtWidgets.QToolBar("常用功能", self)
-        self.top_toolbar.setObjectName("mainToolbar")
-        self.top_toolbar.setMovable(False)
-        self.top_toolbar.setFloatable(False)
-        self.top_toolbar.setAllowedAreas(Qt.TopToolBarArea)
-
-        # 图标在上，文字在下。
-        self.top_toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        self.top_toolbar.setIconSize(QSize(28, 28))
-
-        self.addToolBar(Qt.TopToolBarArea, self.top_toolbar)
-
-        self.top_toolbar.addAction(self.open_action)
-        self.top_toolbar.addSeparator()
-
-        self.top_toolbar.addAction(self.seg_action)
-        self.top_toolbar.addSeparator()
-
-        self.top_toolbar.addAction(self.volume_action)
-        self.top_toolbar.addAction(self.area_action)
-        self.top_toolbar.addAction(self.thickness_action)
-        self.top_toolbar.addSeparator()
-
-        self.top_toolbar.addAction(self.default_action)
-
-        # 只设置顶部功能栏样式。
-        self.top_toolbar.setStyleSheet("""
-            QToolBar {
-                background-color: #f5f6f8;
-                border: none;
-                border-bottom: 1px solid #d8dde5;
-                spacing: 6px;
-                padding: 6px;
-            }
-
-            QToolBar QToolButton {
-                min-width: 76px;
-                padding: 7px 10px;
-                border: 1px solid transparent;
-                border-radius: 5px;
-                color: #253247;
-            }
-
-            QToolBar QToolButton:hover {
-                background-color: #e6effb;
-                border-color: #c5d8f3;
-            }
-
-            QToolBar QToolButton:pressed {
-                background-color: #d4e4fa;
-            }
-
-            QToolBar QToolButton:disabled {
-                color: #a0a7b2;
-            }
-
-            QToolBar::separator {
-                width: 1px;
-                background-color: #d8dde5;
-                margin: 5px 8px;
-            }
-        """)
+    def update_actions(self):
+        busy = self.busy()
+        self.actions["open"].setEnabled(not busy)
+        self.actions["seg"].setEnabled(self.current_volume is not None and not busy and not self.pending)
+        self.actions["reg"].setEnabled(self.current_seg_volume is not None and not busy and not self.pending)
+        self.actions["morph"].setEnabled(self.registration_done and not busy and not self.pending)
+        self.actions["metrics"].setEnabled(self.metrics is not None)
+        self.coverage_check.setEnabled(bool(self.coverage_actors))
+        self.cartilage_check.setEnabled(bool(self.coverage_actors))
+        self.legend.setVisible(bool(self.coverage_actors))
+        self.template_check.setEnabled(bool(self.template_overlays))
+        self.patient_check.setEnabled(bool(self.patient_overlays))
+        self.patient_opacity.setEnabled(bool(self.patient_overlays))
+        self.template_opacity.setEnabled(bool(self.template_overlays))
+        self.template_3d_check.setEnabled(bool(self.template_3d_actors))
+        self.template_3d_opacity.setEnabled(bool(self.template_3d_actors))
+        self.actions["template"].setEnabled(self.current_volume is not None and not busy and not self.pending)
+        self.actions["resume"].setEnabled(bool(self.task_id) and self.pending and not busy)
+        self.actions["retry"].setEnabled(bool(self.operation) and self.pending and not busy)
+        self.actions["qc"].setEnabled(self.registration_qc is not None)
+        self.side.setEnabled(not busy and self.case_id is None and not self.pending)
+        self.seg_modify_dialog.set_busy(busy or self.pending)
 
     def open_raw_nii_gz(self):
-        """打开原始的.nii.gz文件并读取到内存"""
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "选择 NIfTI 文件", "", "NIfTI 文件 (*.nii.gz);;所有文件 (*)"
-        )
-        if not file_path:
+        if self.busy():
             return
-
-        self.previous_nii_path = self.current_nii_path  # 保存上一次加载的文件路径
-        self.current_nii_path = file_path
-
-        self.statusBar().showMessage(f"正在加载: {os.path.basename(file_path)} ...")
-        QtWidgets.QApplication.processEvents()
-
-        if self.current_nii_path is not self.previous_nii_path:
-            self.current_seg_volume = None  # 清空之前的分割结果
-
-            reader = vtk.vtkNIFTIImageReader()
-            reader.SetFileName(file_path)
-            reader.Update()
-
-            self.current_volume = reader.GetOutput()
-            if self.current_volume is None:
-                self.statusBar().showMessage("加载失败！请检查文件格式")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择 MRI", "", "NIfTI (*.nii.gz)")
+        if not path:
+            return
+        if self.pending:
+            answer = QtWidgets.QMessageBox.question(self, "切换病例", "旧任务可能仍在服务器运行。切换后本窗口不再跟踪它，是否继续？")
+            if answer != QtWidgets.QMessageBox.Yes:
                 return
+        try:
+            volume = vtk_loader.load_volume(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "读取失败", str(exc))
+            return
+        self.current_nii_path, self.current_volume = path, volume
+        self.case_id = self.task_id = self.operation = None
+        self.pending = False
+        self.side.setCurrentIndex(0)
+        self.current_seg_volume = None
+        self.registration_done = False
+        self.metrics = self.coverage_manifest = None
+        self.registration_qc = None
+        self.subject_actors.clear()
+        self.coverage_actors.clear()
+        self.clear_template_overlay()
+        self.clear_patient_overlay()
+        self.ren_3d.RemoveAllViewProps()
+        self.vtk_widget.GetRenderWindow().Render()
+        self.slice_actors = vtk_loader.create_slice_actors(volume)
+        self.slice_stacks = {}
+        for key, actor in self.slice_actors.items():
+            renderer = self.renderers[key]
+            renderer.RemoveAllViewProps()
+            stack = vtk.vtkImageStack()
+            actor.GetProperty().SetLayerNumber(0)
+            stack.AddImage(actor)
+            stack.SetActiveLayer(0)
+            self.slice_stacks[key] = stack
+            renderer.AddViewProp(stack)
+            renderer.ResetCamera()
+            self.widgets[key].GetRenderWindow().Render()
+        self.statusBar().showMessage(f"已加载：{Path(path).name}；请选择左右膝")
+        self.reset_slice_positions()
+        self.update_actions()
 
-            scalar_range = self.current_volume.GetScalarRange()
-            self.statusBar().showMessage(
-                f"已加载: {os.path.basename(file_path)}  数据范围: {scalar_range[0]:.2f} ~ {scalar_range[1]:.2f}"
-            )
+    def change_slice(self, axis, index):
+        if self.current_volume is None or axis not in self.slice_actors:
+            return
+        vtk_loader.set_slice_index(
+            self.current_volume, axis, index, self.slice_actors[axis],
+            self.template_overlays.get(axis))
+        if axis in self.patient_overlays:
+            vtk_loader.set_slice_index(
+                self.current_volume, axis, index, self.slice_actors[axis],
+                self.patient_overlays[axis])
+        total = self.current_volume.shape[{"x": 0, "y": 1, "z": 2}[axis]]
+        self.slice_labels[axis].setText(f"{index + 1} / {total}")
+        self.widgets[axis].GetRenderWindow().Render()
 
-            if self.current_volume == None:
-                self.statusBar().showMessage(
-                "你还没加载文件呢")
-                return
-            
-            self.load_slice_views()
-
-    def load_slice_views(self):
-
-        """加载切片视图"""
-
-        self.hide_placeholder_text("slices")
-
-        self.ren_slice_x.RemoveAllViewProps()
-        self.ren_slice_y.RemoveAllViewProps()
-        self.ren_slice_z.RemoveAllViewProps()
-        
-        actors = vtk_loader.create_slice_actors(self.current_volume)
-       
-        self.ren_slice_x.RemoveAllViewProps()
-        self.ren_slice_x.AddActor(actors[0])
-        self.ren_slice_x.ResetCamera() 
-        self.widget_slice_x.GetRenderWindow().Render()
-
-        self.ren_slice_y.RemoveAllViewProps()
-        self.ren_slice_y.AddActor(actors[1])
-        self.ren_slice_y.ResetCamera() 
-        self.widget_slice_y.GetRenderWindow().Render()
-
-        self.ren_slice_z.RemoveAllViewProps()
-        self.ren_slice_z.AddActor(actors[2])
-        self.ren_slice_z.ResetCamera()
-        self.widget_slice_z.GetRenderWindow().Render()
-
-
-
-    
-    def create_groupbox(self):
-
-        """ 创建控制面板 """
-
-        self.choose_boxes = []
-        self.opacity_sliders = []
-
-        group_box = QtWidgets.QGroupBox("选择感兴趣的区域")
-        group_box_layout = QtWidgets.QVBoxLayout()
-
-        labels = {1: "股骨", 2:"股骨软骨" , 3: "胫骨", 4: "内侧胫骨软骨", 5: "外侧胫骨软骨"}
-
-        self.selected_labels = [1,1,1,1,1]
-        self.opacity_labels = [70,70,70,70,70]
-
-        for idx,name in labels.items():
-            
-            checkbox = QtWidgets.QCheckBox(name)
-            checkbox.setProperty("label value",idx)
-            checkbox.setCheckState(True)
-            checkbox.stateChanged.connect(self.choosebox_has_changed)
-            group_box_layout.addWidget(checkbox)
-            self.choose_boxes.append(checkbox)
-
-            slider = QtWidgets.QSlider(Qt.Horizontal)
-            slider.setMinimum(0)
-            slider.setMaximum(100)
-            slider.setValue(70)
-            slider.valueChanged.connect(self.slider_has_changed)
-            group_box_layout.addWidget(slider)
-            self.opacity_sliders.append(slider)
-
-
-        group_box.setLayout(group_box_layout)
-        self.left_layout.addWidget(group_box)
-
-    def choosebox_has_changed(self):
-        """选择显示部件"""
-        for cb in self.choose_boxes:
-            val = cb.property("label value")
-            self.selected_labels[val-1] = cb.isChecked()
-        print(self.selected_labels)
-
-    def slider_has_changed(self):
-
-        """改变建模透明度"""
-
-        for idx,slider in enumerate(self.opacity_sliders):    
-            self.opacity_labels[idx] = slider.value()
-        print(self.opacity_labels)
-
-    def execute_surface(self):
-
-        """下载分割文件并开始执行生成表面"""
-
+    def reset_slice_positions(self):
         if self.current_volume is None:
-            self.statusBar().showMessage("请先加载原始文件")
             return
+        for axis, slider in self.slice_sliders.items():
+            total = self.current_volume.shape[{"x": 0, "y": 1, "z": 2}[axis]]
+            slider.blockSignals(True)
+            slider.setRange(0, total - 1)
+            slider.setValue(total // 2)
+            slider.setEnabled(True)
+            slider.blockSignals(False)
+            self.change_slice(axis, total // 2)
 
-        # 如果已有分割结果且显示设置未变，直接渲染
-        if self.current_seg_volume is not None:
+    def show_modify_dialog(self):
+        self.seg_modify_dialog.set_settings(self.selected_labels, self.opacity_labels)
+        self.seg_modify_dialog.set_has_segmentation(self.current_seg_volume is not None)
+        self.seg_modify_dialog.show()
+        self.seg_modify_dialog.raise_()
+
+    def apply_modify_settings(self, selected, opacity):
+        self.selected_labels, self.opacity_labels = selected.copy(), opacity.copy()
+        if self.subject_actors:
             self.render_surface()
-            return
-        
-        #如果还未加载分割数据，向api获取
         else:
+            self.start_operation("segmentation")
 
-                # 创建无限进度对话框
-            self.progress = QProgressDialog(self)
-            self.progress.setWindowTitle("MRI 自动分割")
-            self.progress.setWindowModality(Qt.WindowModal)
-            self.progress.setRange(0, 0)
-            self.progress.setMinimumDuration(0)
-            self.progress.setMinimumWidth(460)
-            self.progress.setAutoClose(False)
-            self.progress.setAutoReset(False)
-
-            # 自定义内容标签
-            self.progress_label = QtWidgets.QLabel()
-            self.progress_label.setTextFormat(Qt.PlainText)
-            self.progress_label.setWordWrap(True)
-            self.progress_label.setMinimumWidth(400)
-            self.progress_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.progress.setLabel(self.progress_label)
-
-            self.progress.setCancelButtonText("取消")
-            self.progress.canceled.connect(self.on_seg_cancel)
-
-            # 对话框样式
-            self.progress.setStyleSheet("""
-                QProgressDialog {
-                    background-color: #f7f9fc;
-                }
-
-                QLabel {
-                    color: #334155;
-                    font-family: "Microsoft YaHei";
-                    font-size: 13px;
-                    padding: 12px 4px;
-                }
-
-                QProgressBar {
-                    min-height: 10px;
-                    max-height: 10px;
-                    border: none;
-                    border-radius: 5px;
-                    background-color: #e2e8f0;
-                }
-
-                QProgressBar::chunk {
-                    background-color: #3b82f6;
-                    border-radius: 5px;
-                }
-
-                QPushButton {
-                    min-width: 80px;
-                    padding: 7px 16px;
-                    color: #475569;
-                    background-color: white;
-                    border: 1px solid #cbd5e1;
-                    border-radius: 5px;
-                }
-
-                QPushButton:hover {
-                    background-color: #eff6ff;
-                    border-color: #93c5fd;
-                }
-            """)
-
-            # 使用实际经过时间计时
-            self.seg_elapsed = QElapsedTimer()
-            self.seg_elapsed.start()
-
-            self.progress_timer = QTimer(self.progress)
-            self.progress_timer.setInterval(1000)
-            self.progress_timer.timeout.connect(self.update_seg_progress)
-
-            self.update_seg_progress()
-            self.progress_timer.start()
-            self.progress.show()
-
-            # 创建工作线程
-            self.worker = SegWorker.SegWorker(
-                self.current_nii_path,
-                "seg_result",
-                "http://127.0.0.1:8000"
-            )
-            self.worker.finished.connect(self.on_seg_finished)
-            self.worker.failed.connect(self.on_seg_failed)
-            self.worker.start()
-
-    def update_seg_progress(self):
-        """更新分割等待信息。"""
-        elapsed_seconds = self.seg_elapsed.elapsed() // 1000
-        minutes, seconds = divmod(elapsed_seconds, 60)
-
-        file_name = os.path.basename(self.current_nii_path)
-
-        self.progress_label.setText(
-            "正在处理膝关节 MRI\n\n"
-            f"当前文件：{file_name}\n"
-            "处理状态：正在请求分割服务并获取结果\n"
-            f"已用时间：{minutes:02d}:{seconds:02d}\n\n"
-            "完成后将自动加载分割结果并生成 3D 模型。\n"
+    def start_operation(self, operation, resume=False):
+        if self.busy() or not self.current_nii_path:
+            return
+        if self.pending and not resume:
+            return
+        side = self.side.currentData()
+        if side is None:
+            QtWidgets.QMessageBox.information(self, "选择左右膝", "请先选择实际的左右膝。")
+            return
+        if operation in {"registration", "morphometry"} and side != "right":
+            QtWidgets.QMessageBox.information(self, "模板未配置", "当前只配置右膝模板，暂不启动左膝配准。")
+            return
+        if operation == "registration" and not self.case_id:
+            return
+        if operation == "morphometry" and not self.registration_done:
+            return
+        if not resume:
+            self.task_id = None
+            if operation == "segmentation":
+                self.clear_patient_overlay()
+            # Hide obsolete metrics/geometry before any recomputation.
+            self.coverage_actors.clear()
+            self.metrics = self.coverage_manifest = None
+            if operation in {"segmentation", "registration"}:
+                self.clear_template_overlay()
+                self.registration_done = False
+                self.registration_qc = None
+            self.rebuild_scene()
+        self.operation = operation
+        self.pending = True
+        self.worker = AnalysisWorker(
+            operation=operation, file_path=self.current_nii_path,
+            knee_side=side, case_id=self.case_id,
+            task_id=self.task_id if resume else None,
+            save_dir=str(Path(__file__).resolve().parent / "cache"),
+            server_url=self.server_url, parent=self,
         )
+        self.worker.case_created.connect(self.on_case_created)
+        self.worker.task_created.connect(self.on_task_created)
+        self.worker.status_changed.connect(self.on_status)
+        self.worker.result_ready.connect(self.on_result)
+        self.worker.failed.connect(self.on_failed)
+        self.worker.waiting_stopped.connect(self.on_stopped)
+        self.worker.finished.connect(self.on_worker_finished)
 
-    def on_seg_cancel(self):
-        """用户点击取消按钮"""
-        if hasattr(self, "progress_timer"):
-            self.progress_timer.stop()
+        # 每次真正启动任务时才创建进度框
+        if self.progress is not None:
+            self.progress.deleteLater()
 
-        if hasattr(self, 'worker') and self.worker.isRunning():
-            self.worker.cancel()
-            self.worker.quit()
-            self.worker.wait()
-        self.progress.close()
-        self.statusBar().showMessage("分割已取消")
+        self.progress = QtWidgets.QProgressDialog(
+            "", "停止等待", 0, 0, self
+        )
+        self.progress.setWindowTitle("MRI 处理任务")
+        self.progress.setWindowModality(Qt.NonModal)
+        self.progress.setMinimumWidth(460)
+        self.progress.setMinimumDuration(0)
+        self.progress.setAutoClose(False)
+        self.progress.setAutoReset(False)
+        self.progress.canceled.connect(self.stop_waiting)
 
-    def on_seg_finished(self, result_path):
-        """分割成功"""
-        if hasattr(self, "progress_timer"):
-            self.progress_timer.stop()
+        self.status_text = "正在连接服务器…"
+        self.elapsed.start()
+        self.update_progress()
+        self.progress.show()
+        self.timer.start(1000)
+        self.worker.start()
+        self.update_actions()
 
-        self.progress.close()  # 关闭对话框
-        self.statusBar().showMessage("分割完成")
+    def on_case_created(self, value):
+        self.case_id = value
 
-        # 加载分割结果
-        reader = vtk.vtkNIFTIImageReader()
-        reader.SetFileName(result_path)
-        reader.Update()
-        self.current_seg_volume = reader.GetOutput()
-        if self.current_seg_volume is None:
-            self.statusBar().showMessage("分割结果加载失败！")
+    def on_task_created(self, value):
+        self.task_id = value
+
+    def on_status(self, text):
+        self.status_text = text
+        self.statusBar().showMessage(text)
+        self.update_progress()
+
+    def update_progress(self):
+
+        if self.progress is None:
             return
 
+        seconds = self.elapsed.elapsed() // 1000 if self.elapsed.isValid() else 0
+        self.progress.setLabelText(f"{self.status_text}\n已用时间：{seconds//60:02d}:{seconds%60:02d}\n停止等待不会取消服务器计算。")
+
+    def stop_waiting(self):
+        if self.busy():
+            self.worker.stop_waiting()
+            self.statusBar().showMessage("正在停止本地等待，等待当前网络请求返回…")
+
+    def on_stopped(self):
+        self.status_text = "已停止等待；服务器任务可能仍在运行，可点击继续等待"
+
+    def on_failed(self, error):
+        self.status_text = "任务或结果加载失败；可继续查询原任务，或确认失败后重新提交"
+        QtWidgets.QMessageBox.warning(self, "处理失败", error)
+
+    def resume_task(self):
+        if self.task_id:
+            self.start_operation(self.operation, resume=True)
+
+    def retry_task(self):
+        answer = QtWidgets.QMessageBox.question(self, "确认重新提交", "请先确认原任务已失败。若只是网络中断，请优先继续等待，避免重复计算。仍要重新提交吗？")
+        if answer == QtWidgets.QMessageBox.Yes:
+            self.pending = False
+            self.start_operation(self.operation)
+
+    def on_result(self, result):
+        if result["case_id"] != self.case_id:
+            return
+        try:
+            if result["operation"] == "segmentation":
+                volume = vtk_loader.load_volume(result["files"]["segmentation"], self.current_volume, labels=True)
+                actors = vtk_loader.create_surface_actors(volume)
+                if not actors:
+                    raise ValueError("分割结果中没有可显示的组织")
+                self.current_seg_volume, self.subject_actors = volume, actors
+                self.load_patient_overlay(volume)
+                self.coverage_actors = {}
+                self.registration_done = False
+                self.registration_qc = None
+            elif result["operation"] == "registration":
+                qc = json.loads(Path(result["files"]["qc"]).read_text(encoding="utf-8"))
+                self.load_template_overlay(result["files"]["registration"])
+                self.registration_qc = qc
+                self.registration_done = True
+            elif result["operation"] == "morphometry":
+                manifest = json.loads(Path(result["files"]["coverage_manifest"]).read_text(encoding="utf-8"))
+                if manifest.get("coordinate_system") != "NIfTI RAS" or manifest.get("units") != "mm":
+                    raise ValueError("分析网格坐标约定不兼容；需要 NIfTI RAS / mm")
+                actors = vtk_loader.load_coverage_actors(result["files"]["bone_coverage"])
+                self.coverage_actors = actors
+                self.metrics = result["metrics"]
+                self.coverage_manifest = manifest
+                self.coverage_check.setChecked(True)
+                self.cartilage_check.setChecked(False)
+            else:
+                raise ValueError("此界面只处理分割、配准和指标计算任务")
+            self.rebuild_scene()
+            if result["operation"] == "segmentation":
+                self.ren_3d.ResetCamera()
+            self.ren_3d.ResetCameraClippingRange()
+            self.vtk_widget.GetRenderWindow().Render()
+            self.seg_modify_dialog.set_has_segmentation(True)
+            self.pending = False
+            self.task_id = None
+            self.status_text = {
+                "segmentation": "分割已显示，可继续配准",
+                "registration": "配准完成：紫色为模板软骨参考，可调整叠加不透明度",
+                "morphometry": "计算完成：绿色为软骨覆盖，红色为估计全层缺损，灰色为未纳入分析范围",
+            }[result["operation"]]
+        except Exception as exc:
+            self.on_failed(str(exc))
+
+    def rebuild_scene(self):
+        self.ren_3d.RemoveAllViewProps()
+        for actor in (list(self.subject_actors.values()) + list(self.coverage_actors.values())
+                      + list(self.template_3d_actors.values())):
+            self.ren_3d.AddActor(actor)
         self.render_surface()
 
-    def on_seg_failed(self, error_msg):
-        """分割失败"""
-        if hasattr(self, "progress_timer"):
-            self.progress_timer.stop()
+    def clear_template_overlay(self):
+        for actor in self.template_3d_actors.values():
+            self.ren_3d.RemoveActor(actor)
+        self.template_3d_actors = {}
+        for key, actor in self.template_overlays.items():
+            self.slice_stacks[key].RemoveImage(actor)
+        self.template_overlays = {}
+        self.update_template_overlay()
+        self.render_surface()
 
-        self.progress.close()
-        self.statusBar().showMessage(f"分割失败: {error_msg}")
-        QtWidgets.QMessageBox.critical(self, "错误", f"分割服务出错:\n{error_msg}")
+    def clear_patient_overlay(self):
+        for key, actor in self.patient_overlays.items():
+            self.slice_stacks[key].RemoveImage(actor)
+        self.patient_overlays = {}
+        self.update_patient_overlay()
 
-            
-    def render_surface(self):
+    def load_patient_overlay(self, volume):
+        overlays = vtk_loader.create_patient_overlays(volume, self.slice_actors)
+        self.clear_patient_overlay()
+        self.patient_overlays = overlays
+        for key, actor in overlays.items():
+            self.slice_stacks[key].AddImage(actor)
+        self.patient_check.setChecked(True)
+        self.update_patient_overlay()
 
-        """根据选择的部位和透明度生成表面"""
+    def update_patient_overlay(self, *_):
+        opacity = self.patient_opacity.value() / 100
+        self.patient_opacity_text.setText(f"{self.patient_opacity.value()}%")
+        for actor in self.patient_overlays.values():
+            actor.SetVisibility(self.patient_check.isChecked())
+            actor.GetProperty().SetOpacity(opacity)
+        for key in self.slice_stacks:
+            self.widgets[key].GetRenderWindow().Render()
 
-        if self.current_seg_volume is None:
-            return
-
-        self.hide_placeholder_text("3D")
-        self.ren_3d.RemoveAllViewProps()
-        
-        actors = vtk_loader.create_surface_actors(
-            self.current_seg_volume,
-            self.selected_labels,
-            self.opacity_labels)
-
-        for actor in actors:
-            print(len(actors))
-            self.ren_3d.AddActor(actor)
-
-        self.ren_3d.ResetCamera()
+    def load_template_overlay(self, path):
+        volume = vtk_loader.load_volume(path, self.current_volume, labels=True)
+        overlays = vtk_loader.create_template_overlays(volume, self.slice_actors)
+        actors_3d = vtk_loader.create_template_cartilage_actors(volume)
+        self.clear_template_overlay()
+        self.template_3d_actors = actors_3d
+        self.template_overlays = overlays
+        for key, actor in overlays.items():
+            self.slice_stacks[key].AddImage(actor)
+        self.template_check.setChecked(True)
+        self.template_3d_check.setChecked(True)
+        self.update_template_overlay()
+        self.rebuild_scene()
+        if not self.subject_actors and not self.coverage_actors:
+            self.ren_3d.ResetCamera()
+        self.ren_3d.ResetCameraClippingRange()
         self.vtk_widget.GetRenderWindow().Render()
 
+    def update_template_overlay(self, *_):
+        opacity = self.template_opacity.value() / 100
+        self.template_opacity_text.setText(f"{self.template_opacity.value()}%")
+        for key, actor in self.template_overlays.items():
+            actor.SetVisibility(self.template_check.isChecked())
+            actor.GetProperty().SetOpacity(opacity)
+        for key in self.slice_stacks:
+            self.widgets[key].GetRenderWindow().Render()
+
+    def open_template_overlay(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选择当前病例的 warped_template_seg.nii.gz（已配准标签）", "", "NIfTI (*.nii.gz)")
+        if not path:
+            return
+        try:
+            self.load_template_overlay(path)
+            self.update_actions()
+            self.statusBar().showMessage("已载入模板软骨参考；请确认标签来自当前病例的配准结果")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "模板叠加失败", str(exc))
+
+    def render_surface(self, *_):
+        opacity = self.template_3d_opacity.value() / 100
+        self.template_3d_opacity_text.setText(f"{self.template_3d_opacity.value()}%")
+        for actor in self.template_3d_actors.values():
+            actor.SetVisibility(self.template_3d_check.isChecked())
+            actor.GetProperty().SetOpacity(opacity)
+        analysis = bool(self.coverage_actors) and self.coverage_check.isChecked()
+        for label, actor in self.subject_actors.items():
+            # Hide preview bone while metric bone is shown: no duplicate surfaces.
+            visible = self.selected_labels[label-1]
+            if analysis:
+                visible = visible and label not in (1, 3) and self.cartilage_check.isChecked()
+            actor.SetVisibility(visible)
+            actor.GetProperty().SetOpacity(self.opacity_labels[label-1] / 100)
+        for label, actor in self.coverage_actors.items():
+            actor.SetVisibility(analysis and self.selected_labels[label-1])
+            # Opaque analysis faces keep red/green categorical coloring readable.
+            actor.GetProperty().SetOpacity(1.0)
+        if hasattr(self, "vtk_widget"):
+            self.vtk_widget.GetRenderWindow().Render()
 
     def default_back(self):
+        self.patient_check.setChecked(True)
+        self.patient_opacity.setValue(40)
+        self.reset_slice_positions()
+        self.selected_labels, self.opacity_labels = [True]*5, [70]*5
+        self.seg_modify_dialog.set_settings(self.selected_labels, self.opacity_labels)
+        self.coverage_check.setChecked(True)
+        self.cartilage_check.setChecked(False)
+        self.template_check.setChecked(True)
+        self.template_opacity.setValue(40)
+        self.template_3d_check.setChecked(True)
+        self.template_3d_opacity.setValue(35)
+        self.render_surface()
 
-        """显示部位和透明度回到默认值"""
+    def show_metrics(self):
+        if self.metrics is None:
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("形态学指标（覆盖面积为 cAB）")
+        dialog.resize(850, 620)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        regions = self.metrics.get("regions", {})
+        table = QtWidgets.QTableWidget(len(regions), 5)
+        table.setHorizontalHeaderLabels(["区域", "FCL (%)", "平均厚度 (mm)", "覆盖面积 (mm²)", "体积 (mm³)"])
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        for row, (region, values) in enumerate(regions.items()):
+            table.setItem(row, 0, QtWidgets.QTableWidgetItem(region))
+            for col, key in enumerate(("FCL", "Mean Thickness", "Surface Area", "Volume"), 1):
+                value = values.get(key)
+                table.setItem(row, col, QtWidgets.QTableWidgetItem("不可计算" if value is None else f"{value:.4f}"))
+        table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(table)
+        layout.addWidget(QtWidgets.QLabel("缺损区域的零厚度参与平均；灰色骨面不表示健康判断。"))
+        dialog.exec_()
+        dialog.deleteLater()
 
-        self.selected_labels = [1,1,1,1,1]
-        self.opacity_labels = [70,70,70,70,70]
-        for i in range(5):
-            # checkbox
-            self.choose_boxes[i].setChecked(True)
-            # slider
-            self.opacity_sliders[i].setValue(70)
+    def show_qc(self):
+        QtWidgets.QMessageBox.information(self, "配准质控", json.dumps(self.registration_qc, ensure_ascii=False, indent=2))
 
-    def add_placeholder_text(self, renderer, text, view_type="3D"):
-
-        actor = vtk.vtkTextActor()
-        actor.SetInput(text)
-        prop = actor.GetTextProperty()
-        prop.SetFontSize(28)
-        prop.SetColor(1, 1, 1)                     # 白色
-        prop.SetJustificationToCentered()
-        prop.SetVerticalJustificationToCentered()
-        prop.SetShadow(True)
-        prop.SetShadowOffset(2, -2)
-        
-        # 设置中文字体（Windows 常用字体路径）
-        # 宋体: C:/Windows/Fonts/simsun.ttc
-        # 微软雅黑: C:/Windows/Fonts/msyh.ttf
-        # 黑体: C:/Windows/Fonts/simhei.ttf
-        prop.SetFontFamily(vtk.VTK_FONT_FILE)
-        prop.SetFontFile(r"C:/Windows/Fonts/simsun.ttc")   # 选择存在的一种
-        
-        renderer.AddActor(actor)
-        if view_type == "3D":
-            self.placeholder_actors_3d.append((actor, renderer))
-        else:
-            self.placeholder_actors_slices.append((actor, renderer))
-
-
-    def update_placeholder_positions(self):
-        placeholder_actors = self.placeholder_actors_3d + self.placeholder_actors_slices
-        for actor, renderer in placeholder_actors:
-            size = renderer.GetSize()          # (width, height)
-            if size[0] == 0 or size[1] == 0:
-                continue
-            center_x = size[0] // 2
-            center_y = size[1] // 2
-            actor.SetDisplayPosition(center_x, center_y)
-
-    def hide_placeholder_text(self, view_type="all"):
-        if view_type == "3D" or view_type == "all":
-            for actor, renderer in self.placeholder_actors_3d:
-                actor.SetVisibility(False)
-        if view_type == "slices" or view_type == "all":
-            for actor, renderer in self.placeholder_actors_slices:
-                actor.SetVisibility(False)
+    def on_worker_finished(self):
+        self.timer.stop()
+        self.progress.hide()
+        old = self.worker
+        self.worker = None
+        old.deleteLater()
+        self.statusBar().showMessage(self.status_text)
+        self.update_actions()
+        if self.closing:
+            QTimer.singleShot(0, self.close)
 
     def showEvent(self, event):
         super().showEvent(event)
-        # 初始化所有交互器
-        self.iren.Initialize()
-        self.iren_x.Initialize()
-        self.iren_y.Initialize()
-        self.iren_z.Initialize()
-
-        # 更新占位文字位置
-        self.update_placeholder_positions()
-    
-        # 强制渲染所有窗口，让背景色生效
-        self.vtk_widget.GetRenderWindow().Render()
-        self.widget_slice_x.GetRenderWindow().Render()
-        self.widget_slice_y.GetRenderWindow().Render()
-        self.widget_slice_z.GetRenderWindow().Render()
-
+        if not self.initialized:
+            for widget in self.widgets.values():
+                widget.GetRenderWindow().GetInteractor().Initialize()
+                widget.GetRenderWindow().Render()
+            self.initialized = True
 
     def closeEvent(self, event):
-
-        if hasattr(self, "widget_slice_x"):
-            self.widget_slice_x.Finalize()
-
-        if hasattr(self, "widget_slice_y"):
-            self.widget_slice_y.Finalize()
-
-        if hasattr(self, "widget_slice_z"):
-            self.widget_slice_z.Finalize()
-
-        if hasattr(self, "widget_3d"):
-            self.widget_3d.Finalize()
-
+        if self.busy():
+            self.closing = True
+            self.stop_waiting()
+            event.ignore()
+            return
+        self.timer.stop()
+        for widget in self.widgets.values():
+            widget.Finalize()
         event.accept()
 
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = NiftiSurfaceViewer()
-    window.setWindowTitle("膝关节MRI可视化界面")
-    window.resize(900, 700)
+    window.setWindowTitle("膝关节 MRI：形态分析与软骨缺损")
+    window.resize(1200, 850)
     window.show()
     sys.exit(app.exec_())
