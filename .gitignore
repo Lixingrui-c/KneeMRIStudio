@@ -1,38 +1,40 @@
-# Python 缓存和虚拟环境
+# ==================== Python 缓存与虚拟环境 ====================
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# 编辑器配置
+# ==================== 编辑器与工作区配置 ====================
 .vscode/
 .idea/
+/UI-project.code-workspace
 
-# MRI 数据和分割结果
-*.nii
-*.nii.gz
-*.dcm
-seg_result/
-
-# 模型权重
-*.pth
-*.pt
-*.ckpt
-
-# 本地配置和密钥
+# ==================== 本地配置与密钥 ====================
 .env
 .env.*
 !.env.example
 
-# nnUnet 模型
-/server/nnUNet_results/
+# ==================== 医学影像数据 ====================
+*.nii
+*.nii.gz
+*.dcm
+
+# ==================== 模型权重 ====================
+*.pth
+*.pt
+*.ckpt
+/server/network_weights/
+
+# ==================== nnU-Net 数据与训练输出 ====================
 /server/nnUNet_raw/
 /server/nnUNet_preprocessed/
+/server/nnUNet_results/
 
-#临时病例和计算结果
+# ==================== 配准模板 ====================
+/server/KL0_R/
+/server/templates/
+
+# ==================== 临时文件与计算结果 ====================
+seg_result/
 /server/temp/
-
-client/cache/
-server/KL0_R/
-server/network_weights/
-server/templates/
+/client/cache/
