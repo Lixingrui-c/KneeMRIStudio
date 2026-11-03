@@ -99,9 +99,12 @@ def start_task(case_id: UUID,
         if state["active"]:
             raise HTTPException(409, "该病例已有排队或运行中的任务")
         if operation == "analysis":
-            # Explicitly rerun the complete pipeline; no stale cache reuse.
-            stages = list(STAGES)
-            state["done"].clear()
+            # Continue from the first incomplete stage. Single-step reruns
+            # already invalidate this stage and everything downstream.
+            first = next((i for i, stage in enumerate(STAGES)
+                          if stage not in state["done"]), len(STAGES))
+            stages = list(STAGES[first:])
+            state["done"].intersection_update(STAGES[:first])
         else:
             index = STAGES.index(operation)
             if not set(STAGES[:index]).issubset(state["done"]):
@@ -125,6 +128,9 @@ def task_status(task_id: UUID):
 
 
 ARTIFACTS = {
+    "femur_thickness": ("morphometry", "morphometry/femur_thickness.vtp"),
+    "tibia_thickness": ("morphometry", "morphometry/tibia_thickness.vtp"),
+    "thickness_manifest": ("morphometry", "morphometry/thickness_manifest.json"),
     "segmentation": ("segmentation", "segmentation/image.nii.gz"),
     "registration": ("registration", "registration/warped_template_seg.nii.gz"),
     "qc": ("registration", "registration/registration_qc.json"),

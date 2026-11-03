@@ -77,7 +77,8 @@ def run_stage(case_dir, stage, log_path):
         ], log_path)
         for name in ("MorphQuant.csv", "MorphQuant_Compartments.csv", "FCL_Areas.csv",
                      "MorphQuant_meta.json", "femur_coverage.vtp", "tibia_coverage.vtp",
-                     "bone_coverage.vtp", "coverage_manifest.json"):
+                     "bone_coverage.vtp", "coverage_manifest.json",
+                     "femur_thickness.vtp", "tibia_thickness.vtp", "thickness_manifest.json"):
             if not (out / name).is_file() or (out / name).stat().st_size == 0:
                 raise RuntimeError(f"未生成完整结果：{name}")
     else:

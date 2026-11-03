@@ -125,7 +125,7 @@ def load_coverage_actors(path):
     if not np.isfinite(vtk_to_numpy(poly.GetPoints().GetData())).all():
         raise ValueError("分析网格坐标无效")
     # Deterministic colors from categorical CELL labels; no interpolated point labels.
-    rgb = np.array([[180,180,180], [45,190,80], [230,50,50]], dtype=np.uint8)[arrays["coverage_class"].astype(int)]
+    rgb = np.array([[180,180,180], [45,190,80], [180,180,180]], dtype=np.uint8)[arrays["coverage_class"].astype(int)]
     colors = numpy_to_vtk(rgb, deep=True)
     colors.SetName("coverage_rgb")
     poly.GetCellData().AddArray(colors)

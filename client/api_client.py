@@ -14,6 +14,9 @@ OPERATIONS = {
 
 # 当前服务端 ARTIFACTS 支持的下载名称
 RESULT_FILES = {
+    "femur_thickness": "femur_thickness.vtp",
+    "tibia_thickness": "tibia_thickness.vtp",
+    "thickness_manifest": "thickness_manifest.json",
     "bone_coverage": "bone_coverage.vtp",
     "coverage_manifest": "coverage_manifest.json",
     "segmentation": "segmentation.nii.gz",

@@ -12,7 +12,7 @@ class NNUNetPredictorService:
         self.model_folder = (Path(configured) if configured else server / "nnUNet_results" / "Dataset001_KneeSeg" / "nnUNetTrainer__nnUNetPlans__2d")
         if not self.model_folder.is_absolute():
             self.model_folder = server / self.model_folder
-        for relative in ("dataset.json", "plans.json", "fold_0/checkpoint_final.pth"):
+        for relative in ("dataset.json", "plans.json", "fold_all/checkpoint_final.pth"):
             if not (self.model_folder / relative).is_file():
                 raise FileNotFoundError(f"缺少 nnU-Net 模型文件：{self.model_folder / relative}")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,7 +23,7 @@ class NNUNetPredictorService:
             device=self.device, verbose=False,
         )
         self.predictor.initialize_from_trained_model_folder(
-            str(self.model_folder), use_folds=(0,), checkpoint_name="checkpoint_final.pth"
+            str(self.model_folder), use_folds=("all",), checkpoint_name="checkpoint_final.pth"
         )
         print("模型加载完成", flush=True)
 

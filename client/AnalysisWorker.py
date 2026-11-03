@@ -15,6 +15,7 @@ class AnalysisWorker(QThread):
     case_created = pyqtSignal(str)
     task_created = pyqtSignal(str)
     status_changed = pyqtSignal(str)
+    phase_changed = pyqtSignal(int, str)
     result_ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
     waiting_stopped = pyqtSignal()
@@ -73,6 +74,7 @@ class AnalysisWorker(QThread):
                     raise ValueError("首次上传需要 MRI 路径和左右膝信息")
 
                 self.status_changed.emit("正在上传 MRI…")
+                self.phase_changed.emit(0, "准备：上传 MRI")
 
                 response = api_client.upload_case(
                     file_path=self.file_path,
@@ -89,6 +91,7 @@ class AnalysisWorker(QThread):
 
             # 2. 没有任务 ID 时启动任务；已有 ID 时只恢复查询。
             if not self.task_id:
+                self.phase_changed.emit(0, "准备：提交任务")
                 self.status_changed.emit("正在提交任务…")
 
                 response = api_client.start_task(
@@ -109,6 +112,7 @@ class AnalysisWorker(QThread):
             result = self._collect_results()
 
             self._check_stopped()
+            self.phase_changed.emit(4, "结果已下载，正在加载显示")
             self.result_ready.emit(result)
 
         except InterruptedError:
@@ -145,18 +149,23 @@ class AnalysisWorker(QThread):
             stage = task.get("stage")
 
             if status == "completed":
+                self.phase_changed.emit(4, "计算完成，下载结果")
                 self.status_changed.emit("计算完成，正在获取结果…")
                 return
 
             if status == "failed":
                 error = task.get("error") or "服务器未提供错误详情"
-                raise RuntimeError(f"服务器任务失败：{error}")
+                raise RuntimeError(f"服务器任务失败（{stage_names.get(stage, stage or '未知阶段')}）：{error}")
 
             if status == "queued":
+                self.phase_changed.emit(0, "准备：服务器排队中")
                 self.status_changed.emit("任务已提交，正在排队…")
 
             elif status == "running":
                 label = stage_names.get(stage, stage or "处理")
+                self.phase_changed.emit(
+                    {"segmentation": 1, "registration": 2, "morphometry": 3}.get(stage, 0),
+                    f"正在执行：{label}")
                 self.status_changed.emit(f"正在执行{label}…")
 
             else:
@@ -184,6 +193,9 @@ class AnalysisWorker(QThread):
                 "qc",
             ],
             "morphometry": [
+                "femur_thickness",
+                "tibia_thickness",
+                "thickness_manifest",
                 "bone_coverage",
                 "coverage_manifest",
                 "metrics",
@@ -194,6 +206,9 @@ class AnalysisWorker(QThread):
             "analysis": [
                 "registration",
                 "segmentation",
+                "femur_thickness",
+                "tibia_thickness",
+                "thickness_manifest",
                 "bone_coverage",
                 "coverage_manifest",
                 "qc",

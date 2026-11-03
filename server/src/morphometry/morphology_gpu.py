@@ -2822,6 +2822,7 @@ def morphometrics_gpu(seg: np.ndarray, reg: np.ndarray, vox: np.ndarray, labels:
             # They do NOT alter any metric calculation.
             st["_covered_faces_final"] = np.asarray(covered_faces, dtype=bool).copy()
             st["_scb_th_final"] = scb_th
+            st["_scb_th_matched"] = matched.copy()
 
             for r, smask0 in smasks.items():
                 smask = np.asarray(smask0, dtype=bool)
@@ -3205,6 +3206,25 @@ def morphometrics_gpu(seg: np.ndarray, reg: np.ndarray, vox: np.ndarray, labels:
                 vox,
             )
 
+        if __package__:
+            from .thickness_export import attach_thickness
+        else:
+            from thickness_export import attach_thickness
+        for bone_name, keys in (("femur", ("FC",)), ("tibia", ("mTC", "lTC"))):
+            attach_thickness(coverage_export_data[bone_name], [
+                (states[key]["scb"], states[key]["_scb_th_final"].detach().cpu().numpy(),
+                 states[key]["_scb_th_matched"]) for key in keys])
+
+        if __package__:
+            from .thickness_export import attach_regional_fcl
+        else:
+            from thickness_export import attach_regional_fcl
+        percentages = fcl.detach().cpu().numpy() * (100.0 if legacy_fcl_fraction else 1.0)
+        for bone_name, keys in (("femur", ("FC",)), ("tibia", ("mTC", "lTC"))):
+            attach_regional_fcl(coverage_export_data[bone_name],
+                [(states[key]["scb"], states[key]["scb_masks"]) for key in keys],
+                percentages, ROI_NAMES)
+
     result = torch.stack([fcl, mean_th, cAB, vols], dim=0).cpu().numpy()
     _prof_end("30_regional_metrics_and_volume_map", _t_metrics)
     if profile:
@@ -3473,6 +3493,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             from surface_export import export_coverage_surfaces
         export_coverage_surfaces(out_main.parent, coverage_export_data, coverage_affine, vox)
+        if __package__:
+            from .thickness_export import export_thickness_surfaces
+        else:
+            from thickness_export import export_thickness_surfaces
+        export_thickness_surfaces(out_main.parent, coverage_export_data, coverage_affine, args.knee_side)
     comp_out = out_main.parent / "MorphQuant_Compartments.csv"
     fcl_area_out = out_main.parent / "FCL_Areas.csv"
     if final_export_data.get("compartments"):
