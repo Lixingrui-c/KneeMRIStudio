@@ -24,11 +24,15 @@ seg_result/
 .env.*
 !.env.example
 
-# nnUnet 训练日志和输出
-nnUnet_raw/
-temp/
-cache/
-KL0_R/
-network_weights/
-templates/
-UI-project.code-workspace
+# nnUnet 模型
+/server/nnUNet_results/
+/server/nnUNet_raw/
+/server/nnUNet_preprocessed/
+
+#临时病例和计算结果
+/server/temp/
+
+client/cache/
+server/KL0_R/
+server/network_weights/
+server/templates/
