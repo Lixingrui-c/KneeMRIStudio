@@ -1,0 +1,17 @@
+# Direct dependencies pinned from the existing local environment.
+# This is not a full transitive lockfile; clean installation not yet tested.
+# Install the appropriate PyTorch CUDA/CPU wheels BEFORE this file.
+# Existing environment: torch 2.14.0+cu126, torchvision 0.29.0+cu126.
+# The public versions below also accept the matching CUDA local builds.
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32
+numpy==2.5.2
+scipy==1.18.1
+scikit-image==0.26.0
+nibabel==5.4.2
+torch==2.14.0
+torchvision==0.29.0
+nnunetv2==2.8.1
+unigradicon==1.0.5
+itk==5.4.4.post1

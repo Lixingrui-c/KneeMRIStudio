@@ -1,0 +1,10 @@
+# Direct dependencies pinned from the existing local environment.
+# This is not a full transitive lockfile; clean installation not yet tested.
+# Pillow is used by assets/convert_icon.py (optional for normal UI use).
+PyQt5==5.15.11
+vtk==9.7.0
+numpy==2.5.2
+scipy==1.18.1
+nibabel==5.4.2
+requests==2.34.2
+Pillow==12.3.0
